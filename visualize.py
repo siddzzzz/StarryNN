@@ -12,22 +12,24 @@ def plot_network():
         return
 
     # Initialize model to match dimensions
-    num_neurons = 32
-    net = StarryNet(num_neurons=num_neurons, input_indices=[0, 1], output_indices=[-1, -2])
+    num_neurons = 64
+    net = StarryNet(
+        num_neurons=num_neurons, 
+        input_indices=list(range(30)), 
+        output_indices=[-1]
+    )
     
     # Load trained state dict
     try:
-        net.load_state_dict(torch.load('starry_net.pth'))
-        print("Loaded trained model from 'starry_net.pth'")
+        net.load_state_dict(torch.load('models/starry_net.pth'))
+        print("Loaded trained model from 'models/starry_net.pth'")
     except FileNotFoundError:
-        print("Could not find 'starry_net.pth'. Plotting initial random/untrained network.")
+        print("Could not find 'models/starry_net.pth'. Plotting initial random/untrained network.")
     
     mask = net.mask.cpu().numpy()
     weights = (net.W_dense * net.mask).detach().cpu().numpy()
     
     # Create networkx graph
-    # Weight matrices in RNNs represent directed connections from j to i
-    # (i.e. input state @ W.T means state_t = W @ state_{t-1}, so connection is j -> i)
     G = nx.DiGraph()
     
     # Add nodes
@@ -40,28 +42,22 @@ def plot_network():
             if mask[i, j] > 0.5:
                 G.add_edge(j, i, weight=weights[i, j])
                 
-    # Layout: arrange nodes in a circle to mimic a 2D projection of a sphere
+    # Layout: arrange nodes in a circle
     pos = nx.circular_layout(G)
     
     # Define colors for different types of nodes
     node_colors = []
     node_sizes = []
     for node in G.nodes():
-        if node == 0:
-            node_colors.append('#2ecc71')  # Light green for Task 1 Input
-            node_sizes.append(400)
-        elif node == 1:
-            node_colors.append('#27ae60')  # Dark green for Task 2 Input
-            node_sizes.append(400)
+        if node < 30:
+            node_colors.append('#2ecc71')  # Green for 30 Input features
+            node_sizes.append(150)
         elif node == num_neurons - 1:
-            node_colors.append('#e67e22')  # Light orange for Task 1 Output
-            node_sizes.append(400)
-        elif node == num_neurons - 2:
-            node_colors.append('#d35400')  # Dark orange for Task 2 Output
+            node_colors.append('#e67e22')  # Orange for the Exit Node (63)
             node_sizes.append(400)
         else:
             node_colors.append('#3498db')  # Blue for hidden neurons
-            node_sizes.append(150)
+            node_sizes.append(100)
             
     # Set up matplotlib figure
     plt.figure(figsize=(12, 12), facecolor='#111111')
@@ -94,11 +90,11 @@ def plot_network():
         G, pos, 
         edgelist=edges_pos,
         edge_color='#00ffcc',
-        width=[np.abs(G[u][v]['weight']) / max_w * 2.0 for u, v in edges_pos],
-        alpha=0.4,
+        width=[np.abs(G[u][v]['weight']) / max_w * 1.5 for u, v in edges_pos],
+        alpha=0.3,
         arrows=True,
-        arrowsize=10,
-        connectionstyle="arc3,rad=0.1"  # curved edges to distinguish bi-directional
+        arrowsize=8,
+        connectionstyle="arc3,rad=0.05"
     )
     
     # Draw negative edges in magenta/pink
@@ -106,19 +102,16 @@ def plot_network():
         G, pos, 
         edgelist=edges_neg,
         edge_color='#ff007f',
-        width=[np.abs(G[u][v]['weight']) / max_w * 2.0 for u, v in edges_neg],
-        alpha=0.4,
+        width=[np.abs(G[u][v]['weight']) / max_w * 1.5 for u, v in edges_neg],
+        alpha=0.3,
         arrows=True,
-        arrowsize=10,
-        connectionstyle="arc3,rad=0.1"
+        arrowsize=8,
+        connectionstyle="arc3,rad=0.05"
     )
     
-    # Add labels for IO nodes
+    # Add label only for the exit node to avoid clutter
     labels = {
-        0: 'In-Add',
-        1: 'In-Par',
-        num_neurons - 1: 'Out-Add',
-        num_neurons - 2: 'Out-Par'
+        num_neurons - 1: 'Diagnosis (Exit)'
     }
     nx.draw_networkx_labels(
         G, pos, 
@@ -131,7 +124,7 @@ def plot_network():
     
     density = mask.sum() / (num_neurons**2)
     plt.title(
-        f"StarryNN Trained Topology\nNeurons: {num_neurons} | Active Connections: {int(mask.sum())} ({density:.1%})", 
+        f"StarryNN Tabular Settling Topology\nNeurons: {num_neurons} | Active Connections: {int(mask.sum())} ({density:.1%})", 
         color='#ffffff', 
         fontsize=16, 
         fontweight='bold',
@@ -139,7 +132,7 @@ def plot_network():
     )
     
     # Save figure
-    filename = 'starry_net_topology.png'
+    filename = 'plots/starry_net_topology.png'
     plt.savefig(filename, facecolor='#111111', edgecolor='none', bbox_inches='tight', dpi=150)
     plt.close()
     print(f"Successfully generated and saved network topology plot to '{filename}'")
