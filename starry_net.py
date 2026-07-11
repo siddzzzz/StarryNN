@@ -1,0 +1,156 @@
+import torch
+import torch.nn as nn
+import numpy as np
+
+class StarryNet(nn.Module):
+    def __init__(self, num_neurons=32, leak_rate=0.5, input_indices=[0, 1], output_indices=[-1, -2], initial_density=0.8):
+        super(StarryNet, self).__init__()
+        self.num_neurons = num_neurons
+        self.leak_rate = leak_rate
+        self.input_indices = input_indices
+        # Convert negative indices to positive for ease of mapping
+        self.output_indices = [i if i >= 0 else num_neurons + i for i in output_indices]
+        
+        # Dense weight matrix and bias
+        self.W_dense = nn.Parameter(torch.randn(num_neurons, num_neurons) / np.sqrt(num_neurons))
+        self.bias = nn.Parameter(torch.zeros(num_neurons))
+        
+        # Binary connection mask (1 = active, 0 = pruned)
+        # We register it as a buffer so it is saved in the state_dict but not optimized by SGD
+        initial_mask = (torch.rand(num_neurons, num_neurons) < initial_density).float()
+        # Self-connections can be allowed or disabled. Let's allow them but mask can block them.
+        self.register_buffer('mask', initial_mask)
+        
+        # Task readouts: since exit neurons themselves represent the output,
+        # we map their scalar state to the target scale.
+        # Task 1 (Addition) needs a linear scaling (weight & bias)
+        self.readout1_w = nn.Parameter(torch.tensor(1.0))
+        self.readout1_b = nn.Parameter(torch.tensor(0.0))
+        
+        # Task 2 (Parity) needs a linear scaling for classification logits
+        self.readout2_w = nn.Parameter(torch.tensor(1.0))
+        self.readout2_b = nn.Parameter(torch.tensor(0.0))
+        
+    def forward(self, inputs, task_idx):
+        """
+        inputs: shape (batch_size, seq_len, 1)
+        task_idx: 0 for Task 1 (Addition), 1 for Task 2 (Parity)
+        Returns:
+            outputs: shape (batch_size, seq_len)
+            states: shape (batch_size, seq_len, num_neurons)
+        """
+        batch_size, seq_len, _ = inputs.shape
+        device = inputs.device
+        
+        # Initialize neuron states to zero
+        state = torch.zeros(batch_size, self.num_neurons, device=device)
+        states_history = []
+        
+        # Masked weights
+        W = self.W_dense * self.mask
+        
+        # Determine input entry node
+        entry_node = self.input_indices[task_idx]
+        
+        # Propagate through time
+        for t in range(seq_len):
+            # Input projection: feed input to the specific entry node
+            # x_t shape: (batch_size, 1)
+            x_t = inputs[:, t, :]
+            
+            # Prepare inputs to all nodes
+            node_inputs = torch.zeros(batch_size, self.num_neurons, device=device)
+            node_inputs[:, entry_node] = x_t.squeeze(-1)
+            
+            # Recurrent input from other neurons
+            recurrent_input = torch.matmul(state, W.t()) # (batch_size, num_neurons)
+            
+            # State update candidate
+            state_candidate = torch.tanh(recurrent_input + node_inputs + self.bias)
+            
+            # Leaky integration
+            state = (1.0 - self.leak_rate) * state + self.leak_rate * state_candidate
+            states_history.append(state.unsqueeze(1))
+            
+        # Stack states: (batch_size, seq_len, num_neurons)
+        states_history = torch.cat(states_history, dim=1)
+        
+        # Extract readout from the designated exit node for the task
+        exit_node = self.output_indices[task_idx]
+        exit_states = states_history[:, :, exit_node] # (batch_size, seq_len)
+        
+        if task_idx == 0:
+            outputs = self.readout1_w * exit_states + self.readout1_b
+        else:
+            outputs = self.readout2_w * exit_states + self.readout2_b
+            
+        return outputs, states_history
+
+    @torch.no_grad()
+    def prune_connections(self, threshold=0.1):
+        """
+        Prunes active connections whose weight magnitudes are below the threshold.
+        """
+        # Find active connections
+        active_weights = torch.abs(self.W_dense) * self.mask
+        # Create a pruning mask: where active weights are below threshold
+        prune_mask = (active_weights < threshold) & (self.mask == 1.0)
+        
+        # Prune connections
+        self.mask[prune_mask] = 0.0
+        num_pruned = prune_mask.sum().item()
+        return num_pruned
+
+    @torch.no_grad()
+    def grow_connections(self, target_density=0.3):
+        """
+        Grows new random connections to maintain the target density.
+        The new connections are initialized with small random weights.
+        """
+        current_density = self.mask.sum().item() / (self.num_neurons ** 2)
+        if current_density >= target_density:
+            return 0
+        
+        # Determine how many connections to grow
+        total_connections = self.num_neurons ** 2
+        num_to_grow = int((target_density - current_density) * total_connections)
+        
+        # Find all candidate positions where mask is 0
+        pruned_indices = torch.where(self.mask == 0.0)
+        num_candidates = len(pruned_indices[0])
+        
+        if num_candidates == 0 or num_to_grow <= 0:
+            return 0
+        
+        # Randomly choose indices to grow
+        num_to_grow = min(num_to_grow, num_candidates)
+        choice = np.random.choice(num_candidates, size=num_to_grow, replace=False)
+        
+        grow_rows = pruned_indices[0][choice]
+        grow_cols = pruned_indices[1][choice]
+        
+        # Update mask and initialize weights
+        self.mask[grow_rows, grow_cols] = 1.0
+        # Initialize new weights with small normal values
+        new_weights = torch.randn(num_to_grow, device=self.W_dense.device) * 0.01
+        self.W_dense.data[grow_rows, grow_cols] = new_weights
+        
+        return num_to_grow
+
+if __name__ == "__main__":
+    # Test network creation and a forward pass
+    net = StarryNet(num_neurons=8, input_indices=[0, 1], output_indices=[-1, -2])
+    print(net)
+    x = torch.randn(2, 5, 1) # Batch size 2, Seq len 5
+    y1, _ = net(x, task_idx=0)
+    y2, _ = net(x, task_idx=1)
+    print("Task 1 output shape:", y1.shape)
+    print("Task 2 output shape:", y2.shape)
+    
+    # Test pruning
+    pruned = net.prune_connections(threshold=0.2)
+    print(f"Pruned {pruned} connections. Current density: {net.mask.sum().item() / 64:.2f}")
+    
+    # Test growing
+    grown = net.grow_connections(target_density=0.5)
+    print(f"Grown {grown} connections. Current density: {net.mask.sum().item() / 64:.2f}")
