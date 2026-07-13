@@ -42,7 +42,7 @@ def train():
         initial_density=0.8
     ).to(device)
     
-    print(f"Initial connection density: {net.mask.sum().item() / (num_neurons**2):.2%}")
+    print(f"Initial connection density: {net.mask.sum().item() / net.prior_mask.sum().item():.2%}")
     print("Beginning Contrastive Hebbian Learning on Tabular Data...")
     
     # Enable grad-free mode globally for local Hebbian training
@@ -76,7 +76,7 @@ def train():
                 loss_test = torch.mean((p_test - Y_test.squeeze(-1)) ** 2).item()
                 acc_test = ((p_test > 0.0) == (Y_test.squeeze(-1) > 0.0)).float().mean().item()
                 
-                density = net.mask.sum().item() / (num_neurons**2)
+                density = net.mask.sum().item() / net.prior_mask.sum().item()
                 print(f"Epoch {epoch:03d} | Train Loss: {loss_train:.4f} | Train Acc: {acc_train:.2%} | Test Acc: {acc_test:.2%} | Sparsity: {1.0 - density:.1%}")
                 
     # Save the model
