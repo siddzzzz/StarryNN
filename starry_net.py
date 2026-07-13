@@ -11,14 +11,29 @@ class StarryNet(nn.Module):
         # Convert negative indices to positive for ease of mapping
         self.output_indices = [i if i >= 0 else num_neurons + i for i in output_indices]
         
+        # Define functional brain modules
+        if num_neurons == 64:
+            num_sensory, num_assoc, num_motor = 30, 30, 4
+        else:
+            num_sensory = num_neurons // 3
+            num_motor = num_neurons // 6 if num_neurons // 6 > 0 else 1
+            num_assoc = num_neurons - num_sensory - num_motor
+            
+        # Create structural prior mask: 1 = allowed, 0 = blocked
+        prior_mask = torch.ones(num_neurons, num_neurons)
+        motor_start = num_sensory + num_assoc
+        
+        # Block direct Sensory <-> Motor connections
+        prior_mask[:num_sensory, motor_start:] = 0.0  # Sensory to Motor
+        prior_mask[motor_start:, :num_sensory] = 0.0  # Motor to Sensory
+        self.register_buffer('prior_mask', prior_mask)
+        
         # Dense weight matrix and bias
         self.W_dense = nn.Parameter(torch.randn(num_neurons, num_neurons) / np.sqrt(num_neurons))
         self.bias = nn.Parameter(torch.zeros(num_neurons))
         
-        # Binary connection mask (1 = active, 0 = pruned)
-        # We register it as a buffer so it is saved in the state_dict but not optimized by SGD
-        initial_mask = (torch.rand(num_neurons, num_neurons) < initial_density).float()
-        # Self-connections can be allowed or disabled. Let's allow them but mask can block them.
+        # Mask connections: must be a subset of the allowed prior_mask
+        initial_mask = (torch.rand(num_neurons, num_neurons) < initial_density).float() * prior_mask
         self.register_buffer('mask', initial_mask)
         
         # Task readouts: since exit neurons themselves represent the output,
@@ -217,19 +232,21 @@ class StarryNet(nn.Module):
     @torch.no_grad()
     def grow_connections(self, target_density=0.3):
         """
-        Grows new random connections to maintain the target density.
-        The new connections are initialized with small random weights.
+        Grows new random connections (restricted by prior_mask) to maintain the target density.
+        The density is computed relative to the maximum allowed connections in prior_mask.
         """
-        current_density = self.mask.sum().item() / (self.num_neurons ** 2)
+        max_allowed_connections = self.prior_mask.sum().item()
+        current_active = self.mask.sum().item()
+        current_density = current_active / max_allowed_connections
+        
         if current_density >= target_density:
             return 0
         
         # Determine how many connections to grow
-        total_connections = self.num_neurons ** 2
-        num_to_grow = int((target_density - current_density) * total_connections)
+        num_to_grow = int((target_density - current_density) * max_allowed_connections)
         
-        # Find all candidate positions where mask is 0
-        pruned_indices = torch.where(self.mask == 0.0)
+        # Find all candidate positions where mask is 0 AND prior_mask is 1
+        pruned_indices = torch.where((self.mask == 0.0) & (self.prior_mask == 1.0))
         num_candidates = len(pruned_indices[0])
         
         if num_candidates == 0 or num_to_grow <= 0:
