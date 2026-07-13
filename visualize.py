@@ -42,25 +42,50 @@ def plot_network():
             if mask[i, j] > 0.5:
                 G.add_edge(j, i, weight=weights[i, j])
                 
-    # Layout: arrange nodes in a circle
-    pos = nx.circular_layout(G)
+    # Define functional brain modules sizes
+    num_sensory = 30
+    num_assoc = 30
+    num_motor = 4
+    
+    # Create custom layout positioning by functional region
+    pos = {}
+    
+    # 1. Sensory (left vertical arch)
+    for idx in range(num_sensory):
+        theta = -np.pi/2 + np.pi * (idx / max(num_sensory - 1, 1))
+        # Form an arched column on the left
+        pos[idx] = np.array([0.15 - 0.05 * np.cos(theta), 0.5 + 0.4 * np.sin(theta)])
+        
+    # 2. Association (central processing circle)
+    for idx in range(num_sensory, num_sensory + num_assoc):
+        assoc_idx = idx - num_sensory
+        phi = 2 * np.pi * (assoc_idx / max(num_assoc, 1))
+        pos[idx] = np.array([0.5 + 0.16 * np.cos(phi), 0.5 + 0.16 * np.sin(phi)])
+        
+    # 3. Motor (right vertical column)
+    for idx in range(num_sensory + num_assoc, num_neurons):
+        motor_idx = idx - (num_sensory + num_assoc)
+        pos[idx] = np.array([0.85, 0.3 + 0.4 * (motor_idx / max(num_motor - 1, 1))])
     
     # Define colors for different types of nodes
     node_colors = []
     node_sizes = []
     for node in G.nodes():
-        if node < 30:
-            node_colors.append('#2ecc71')  # Green for 30 Input features
-            node_sizes.append(150)
+        if node < num_sensory:
+            node_colors.append('#2ecc71')  # Green for Sensory
+            node_sizes.append(120)
         elif node == num_neurons - 1:
-            node_colors.append('#e67e22')  # Orange for the Exit Node (63)
-            node_sizes.append(400)
+            node_colors.append('#e74c3c')  # Red for the Diagnosis Exit Node (63)
+            node_sizes.append(450)
+        elif node >= num_sensory + num_assoc:
+            node_colors.append('#e67e22')  # Orange for the rest of Motor module
+            node_sizes.append(200)
         else:
-            node_colors.append('#3498db')  # Blue for hidden neurons
+            node_colors.append('#3498db')  # Blue for Association
             node_sizes.append(100)
             
     # Set up matplotlib figure
-    plt.figure(figsize=(12, 12), facecolor='#111111')
+    plt.figure(figsize=(14, 10), facecolor='#111111')
     ax = plt.gca()
     ax.set_facecolor('#111111')
     
@@ -91,10 +116,10 @@ def plot_network():
         edgelist=edges_pos,
         edge_color='#00ffcc',
         width=[np.abs(G[u][v]['weight']) / max_w * 1.5 for u, v in edges_pos],
-        alpha=0.3,
+        alpha=0.25,
         arrows=True,
-        arrowsize=8,
-        connectionstyle="arc3,rad=0.05"
+        arrowsize=7,
+        connectionstyle="arc3,rad=0.03"
     )
     
     # Draw negative edges in magenta/pink
@@ -103,32 +128,38 @@ def plot_network():
         edgelist=edges_neg,
         edge_color='#ff007f',
         width=[np.abs(G[u][v]['weight']) / max_w * 1.5 for u, v in edges_neg],
-        alpha=0.3,
+        alpha=0.25,
         arrows=True,
-        arrowsize=8,
-        connectionstyle="arc3,rad=0.05"
+        arrowsize=7,
+        connectionstyle="arc3,rad=0.03"
     )
     
-    # Add label only for the exit node to avoid clutter
+    # Add label only for the exit node and modules to avoid clutter
     labels = {
         num_neurons - 1: 'Diagnosis (Exit)'
     }
     nx.draw_networkx_labels(
         G, pos, 
         labels=labels, 
-        font_size=10, 
+        font_size=9, 
         font_color='#ffffff', 
         font_family='sans-serif',
         font_weight='bold'
     )
     
+    # Add titles for the visual modules
+    plt.text(0.12, 0.95, "SENSORY MODULE\n(Inputs 0-29)", color='#2ecc71', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
+    plt.text(0.5, 0.95, "ASSOCIATION HUB\n(Cognitive Core)", color='#3498db', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
+    plt.text(0.88, 0.95, "MOTOR MODULE\n(Outputs 60-63)", color='#e67e22', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
+    
     density = mask.sum() / (num_neurons**2)
+    prior_density = net.prior_mask.sum().item() / (num_neurons**2)
     plt.title(
-        f"StarryNN Tabular Settling Topology\nNeurons: {num_neurons} | Active Connections: {int(mask.sum())} ({density:.1%})", 
+        f"StarryNN Modular Hebbian Settling Topology\nNeurons: {num_neurons} | Allowed Wiring Density: {prior_density:.1%} | Active Pruned Density: {density:.1%}", 
         color='#ffffff', 
         fontsize=16, 
         fontweight='bold',
-        pad=20
+        pad=25
     )
     
     # Save figure
