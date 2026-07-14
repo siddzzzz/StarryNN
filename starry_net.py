@@ -42,9 +42,14 @@ class StarryNet(nn.Module):
         self.readout1_w = nn.Parameter(torch.tensor(1.0))
         self.readout1_b = nn.Parameter(torch.tensor(0.0))
         
-        # Task 2 (Parity) needs a linear scaling for classification logits
+        # Task 2 (Parity/Echo) needs a linear scaling for classification logits
         self.readout2_w = nn.Parameter(torch.tensor(1.0))
         self.readout2_b = nn.Parameter(torch.tensor(0.0))
+        
+        # Tabular Task: We support multiple outputs based on output_indices length
+        self.num_outputs = len(output_indices)
+        self.readout_tabular_w = nn.Parameter(torch.ones(self.num_outputs))
+        self.readout_tabular_b = nn.Parameter(torch.zeros(self.num_outputs))
         
     def forward(self, inputs, task_idx, targets=None, beta=0.5, steps=8):
         """
@@ -54,14 +59,14 @@ class StarryNet(nn.Module):
         task_idx: 
             - 0: Task 1 (Addition)
             - 1: Task 2 (Echo)
-            - 2: Tabular Task (Breast Cancer Classification)
+            - 2: Tabular Task (Classification)
         targets: 
             - Sequence targets: shape (batch_size, seq_len)
-            - Tabular targets: shape (batch_size, 1)
+            - Tabular targets: shape (batch_size, num_outputs)
         beta: nudging/feedback strength
         steps: relaxation steps for tabular data
         Returns:
-            outputs: shape (batch_size, seq_len) for sequences, (batch_size) for tabular
+            outputs: shape (batch_size, seq_len) for sequences, (batch_size, num_outputs) for tabular
             states: shape (batch_size, seq_len/steps, num_neurons)
         """
         device = inputs.device
@@ -83,13 +88,13 @@ class StarryNet(nn.Module):
         # Masked weights
         W = self.W_dense * self.mask
         
-        # Determine exit node (always Node N-1 for tabular, or task-specific for sequences)
+        # Determine exit nodes (list of indices)
         if is_tabular:
-            exit_node = self.num_neurons - 1
-            readout_w, readout_b = self.readout2_w, self.readout2_b  # Reuse readout2 for classification
+            exit_nodes = self.output_indices
+            readout_w, readout_b = self.readout_tabular_w, self.readout_tabular_b
         else:
             entry_node = self.input_indices[task_idx]
-            exit_node = self.output_indices[task_idx]
+            exit_nodes = [self.output_indices[task_idx]]
             if task_idx == 0:
                 readout_w, readout_b = self.readout1_w, self.readout1_b
             else:
@@ -110,15 +115,14 @@ class StarryNet(nn.Module):
             # If targets are provided, apply feedback nudge
             if targets is not None:
                 # Extract target for current step
-                y_target = targets if is_tabular else targets[:, t]
+                y_target = targets if is_tabular else targets[:, t].unsqueeze(-1)
                 
                 # Map target to target state space
-                target_state = (y_target.squeeze(-1) if y_target.dim() > 1 else y_target) - readout_b
-                target_state = target_state / (readout_w + 1e-5)
+                target_state = (y_target - readout_b) / (readout_w + 1e-5)
                 target_state = torch.clamp(target_state, -1.0, 1.0)
                 
-                # Nudge exit neuron
-                node_inputs[:, exit_node] += beta * target_state
+                # Nudge exit neurons
+                node_inputs[:, exit_nodes] += beta * target_state
             
             # Recurrent input
             recurrent_input = torch.matmul(state, W.t())
@@ -129,16 +133,19 @@ class StarryNet(nn.Module):
             states_history.append(state.unsqueeze(1))
             
         states_history = torch.cat(states_history, dim=1)
-        exit_states = states_history[:, :, exit_node]
+        exit_states = states_history[:, :, exit_nodes] # shape (batch_size, seq_len, num_outputs)
         
         if is_tabular:
-            # For tabular classification, we only care about the final settled state of the exit node
-            outputs = self.readout2_w * exit_states[:, -1] + self.readout2_b
+            # For tabular classification, we only care about the final settled state of the exit nodes
+            outputs = self.readout_tabular_w * exit_states[:, -1, :] + self.readout_tabular_b
+            # Squeeze output to shape (batch_size) if num_outputs is 1 (for Breast Cancer compatibility)
+            if self.num_outputs == 1:
+                outputs = outputs.squeeze(-1)
         else:
             if task_idx == 0:
-                outputs = self.readout1_w * exit_states + self.readout1_b
+                outputs = self.readout1_w * exit_states.squeeze(-1) + self.readout1_b
             else:
-                outputs = self.readout2_w * exit_states + self.readout2_b
+                outputs = self.readout2_w * exit_states.squeeze(-1) + self.readout2_b
                 
         return outputs, states_history
 
@@ -149,13 +156,13 @@ class StarryNet(nn.Module):
         Updates readout mapping parameters using the delta rule.
         """
         batch_size, seq_len, _ = states_free.shape
-        is_tabular = (targets.dim() == 2 and targets.shape[1] == 1)  # targets: (batch_size, 1)
+        is_tabular = (targets.dim() == 2)
         
         if is_tabular:
-            exit_node = self.num_neurons - 1
-            w, b = self.readout2_w, self.readout2_b
+            exit_nodes = self.output_indices
+            w, b = self.readout_tabular_w, self.readout_tabular_b
         else:
-            exit_node = self.output_indices[task_idx]
+            exit_nodes = [self.output_indices[task_idx]]
             if task_idx == 0:
                 w, b = self.readout1_w, self.readout1_b
             else:
@@ -189,18 +196,18 @@ class StarryNet(nn.Module):
         
         # 3. Update task-specific readouts using local delta rule
         if is_tabular:
-            # For tabular, targets is shape (batch_size, 1), prediction is shape (batch_size)
-            final_exit_states = states_free[:, -1, exit_node]
+            # final_exit_states shape: (batch_size, num_outputs)
+            final_exit_states = states_free[:, -1, exit_nodes]
             predictions = w * final_exit_states + b
-            errors = predictions - targets.squeeze(-1)
+            errors = predictions - targets # shape (batch_size, num_outputs)
             
-            dw = - (errors * final_exit_states).mean()
-            db = - errors.mean()
+            dw = - (errors * final_exit_states).mean(dim=0)
+            db = - errors.mean(dim=0)
             
-            self.readout2_w.data += lr * dw
-            self.readout2_b.data += lr * db
+            self.readout_tabular_w.data += lr * dw
+            self.readout_tabular_b.data += lr * db
         else:
-            exit_states = states_free[:, :, exit_node]
+            exit_states = states_free[:, :, exit_nodes].squeeze(-1)
             predictions = w * exit_states + b
             errors = predictions - targets
             
