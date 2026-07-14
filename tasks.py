@@ -65,6 +65,46 @@ def load_tabular_data(test_size=0.2):
     
     return X_train, Y_train, X_test, Y_test
 
+def load_wine_data(test_size=0.2):
+    """
+    Loads and normalizes the Wine classification dataset.
+    Returns:
+        X_train, Y_train, X_test, Y_test (as PyTorch tensors)
+        Y is one-hot encoded to {-1.0, 1.0} of shape (num_samples, 3)
+    """
+    try:
+        from sklearn.datasets import load_wine
+        from sklearn.model_selection import train_test_split
+        from sklearn.preprocessing import StandardScaler
+    except ImportError:
+        raise ImportError("scikit-learn is required. Run: pip install scikit-learn")
+        
+    data = load_wine()
+    X, Y_labels = data.data, data.target  # X has 13 features, Y has labels {0, 1, 2}
+    
+    # Scale features
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+    
+    # One-hot encode targets into {-1.0, 1.0}
+    num_classes = len(np.unique(Y_labels))
+    Y_onehot = np.full((len(Y_labels), num_classes), -1.0)
+    for idx, val in enumerate(Y_labels):
+        Y_onehot[idx, val] = 1.0
+        
+    # Split
+    X_train, X_test, Y_train, Y_test = train_test_split(
+        X, Y_onehot, test_size=test_size, random_state=42, stratify=Y_labels
+    )
+    
+    # Convert arrays to PyTorch tensors
+    X_train = torch.tensor(X_train, dtype=torch.float32)
+    Y_train = torch.tensor(Y_train, dtype=torch.float32)
+    X_test = torch.tensor(X_test, dtype=torch.float32)
+    Y_test = torch.tensor(Y_test, dtype=torch.float32)
+    
+    return X_train, Y_train, X_test, Y_test
+
 def get_tabular_batches(X, Y, batch_size=64, shuffle=True):
     """
     Yields mini-batches of tabular data.
@@ -94,4 +134,13 @@ if __name__ == "__main__":
         print(f"Test features shape: {X_te.shape} | Test labels shape: {Y_te.shape}")
         print("Label values range:", torch.unique(Y_tr))
     except Exception as e:
-        print("\nCould not load tabular dataset, check if scikit-learn is installed:", e)
+        print("\nCould not load Breast Cancer dataset:", e)
+        
+    try:
+        X_wtr, Y_wtr, X_wte, Y_wte = load_wine_data()
+        print("\nSuccessfully loaded Wine dataset:")
+        print(f"Train features shape: {X_wtr.shape} | Train labels shape: {Y_wtr.shape}")
+        print(f"Test features shape: {X_wte.shape} | Test labels shape: {Y_wte.shape}")
+        print("One-hot label representation check (first 3 samples):\n", Y_wtr[:3])
+    except Exception as e:
+        print("\nCould not load Wine dataset:", e)
