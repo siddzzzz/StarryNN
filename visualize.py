@@ -11,12 +11,12 @@ def plot_network():
         print("pip install networkx matplotlib")
         return
 
-    # Initialize model to match dimensions
+    # Initialize model to match RL dimensions
     num_neurons = 64
     net = StarryNet(
         num_neurons=num_neurons, 
-        input_indices=list(range(13)), 
-        output_indices=[-3, -2, -1]  # 3 class exits
+        input_indices=list(range(4)), 
+        output_indices=[-2, -1]  # 2 action exits
     )
     
     # Load trained state dict
@@ -70,15 +70,15 @@ def plot_network():
     node_colors = []
     node_sizes = []
     for node in G.nodes():
-        if node < 13:
-            node_colors.append('#2ecc71')  # Active Input features (light green)
-            node_sizes.append(180)
+        if node < 4:
+            node_colors.append('#2ecc71')  # Active Input observations (light green)
+            node_sizes.append(220)
         elif node < num_sensory:
             node_colors.append('#27ae60')  # Hidden Sensory nodes (dark green)
             node_sizes.append(100)
-        elif node >= num_neurons - 3:
-            node_colors.append('#e74c3c')  # Red for the 3 Class Exit Nodes (61, 62, 63)
-            node_sizes.append(350)
+        elif node >= num_neurons - 2:
+            node_colors.append('#e74c3c')  # Red for the 2 Action Exit Nodes (62, 63)
+            node_sizes.append(400)
         elif node >= num_sensory + num_assoc:
             node_colors.append('#e67e22')  # Orange for the rest of Motor module
             node_sizes.append(200)
@@ -138,9 +138,8 @@ def plot_network():
     
     # Add label only for the exit nodes
     labels = {
-        61: 'Class 0',
-        62: 'Class 1',
-        63: 'Class 2'
+        62: 'Move Left',
+        63: 'Move Right'
     }
     nx.draw_networkx_labels(
         G, pos, 
@@ -152,14 +151,14 @@ def plot_network():
     )
     
     # Add titles for the visual modules
-    plt.text(0.12, 0.95, "SENSORY MODULE\n(Inputs 0-12 active)", color='#2ecc71', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
+    plt.text(0.12, 0.95, "SENSORY MODULE\n(State Inputs 0-3 active)", color='#2ecc71', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
     plt.text(0.5, 0.95, "ASSOCIATION HUB\n(Cognitive Core)", color='#3498db', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
-    plt.text(0.88, 0.95, "MOTOR MODULE\n(3 Class Outputs)", color='#e67e22', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
+    plt.text(0.88, 0.95, "MOTOR MODULE\n(Left / Right Actions)", color='#e67e22', fontsize=12, fontweight='bold', ha='center', transform=ax.transAxes)
     
     density = mask.sum() / (num_neurons**2)
     prior_density = net.prior_mask.sum().item() / (num_neurons**2)
     plt.title(
-        f"StarryNN Modular Hebbian Multi-Class Topology (Wine Dataset)\nNeurons: {num_neurons} | Allowed Wiring Density: {prior_density:.1%} | Active Pruned Density: {density:.1%}", 
+        f"StarryNN Modular Spiking RL Topology (CartPole Controller)\nNeurons: {num_neurons} | Allowed Wiring Density: {prior_density:.1%} | Active Pruned Density: {density:.1%}", 
         color='#ffffff', 
         fontsize=16, 
         fontweight='bold',
