@@ -131,6 +131,40 @@ class StarryNet(nn.Module):
         self.bias.data.clamp_(-1.0, 1.0)
 
     @torch.no_grad()
+    def dopamine_update(self, spike_history, reward, lr=0.01):
+        """
+        Applies Dopamine-Modulated (Three-Factor) Hebbian Plasticity using spike history.
+        dW = lr * Reward * Spike_Correlation
+        """
+        batch_size, T_sim, _ = spike_history.shape
+        
+        # Compute pre-post spike correlation: correlation[i, j] matches j -> i
+        s_t = spike_history[:, 1:, :].reshape(-1, self.num_neurons)
+        s_t_prev = spike_history[:, :-1, :].reshape(-1, self.num_neurons)
+        
+        # Spike Correlation (Outer Product average)
+        corr = torch.matmul(s_t.t(), s_t_prev) / s_t.shape[0]
+        
+        # Dopamine-modulated update
+        dW = reward * corr
+        self.W_dense.data += lr * dW * self.mask
+        
+        # Enforce weight bounds and metabolic decay
+        self.W_dense.data.clamp_(-2.0, 2.0)
+        self.W_dense.data -= lr * 0.01 * self.W_dense.data * self.mask
+        
+        # Intrinsic homeostatic bias update
+        target_rate = 0.10
+        firing_rate = spike_history.mean(dim=(0, 1))
+        dbias = target_rate - firing_rate
+        
+        h_mask = torch.ones(self.num_neurons, device=spike_history.device)
+        h_mask[self.output_indices] = 0.0
+        
+        self.bias.data += lr * 0.1 * dbias * h_mask
+        self.bias.data.clamp_(-1.0, 1.0)
+
+    @torch.no_grad()
     def prune_connections(self, threshold=0.1):
         """
         Prunes active connections whose weight magnitudes are below the threshold.
